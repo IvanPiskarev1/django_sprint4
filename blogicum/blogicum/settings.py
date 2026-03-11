@@ -13,7 +13,7 @@ SECRET_KEY = 'django-insecure-jm&gpa+*!r*l*r#eisy(n28j$on*)op8_miur)0%(!=h)3%xm^
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 
 
 # Application definition
@@ -127,9 +127,9 @@ STATICFILES_DIRS = [
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# INTERNAL_IPS = [
-#     '127.0.0.1',
-# ]
+INTERNAL_IPS = [
+    '127.0.0.1',
+]
 
 EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
 

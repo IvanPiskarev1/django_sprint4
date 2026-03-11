@@ -7,6 +7,7 @@ from django.utils import timezone
 User = get_user_model()
 
 
+# Create your models here.
 class BaseModel(models.Model):
     is_published = models.BooleanField(
         default=True,
@@ -91,12 +92,12 @@ class Comment(models.Model):
     )
     created_at = models.DateTimeField(
         'Добавлено',
-        auto_now_add=True,  
-        db_index=True       
+        auto_now_add=True,  # auto_now_add=True
+        db_index=True       # для сортировки
     )
     
     class Meta:
-        ordering = ('created_at',)  
+        ordering = ('created_at',)  # от старых к новым
         verbose_name = 'комментарий'
         verbose_name_plural = 'Комментарии'
     

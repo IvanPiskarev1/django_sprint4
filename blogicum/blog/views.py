@@ -12,14 +12,15 @@ from django.contrib.auth.decorators import login_required
 from django.db.models import Count
 from django.http import Http404
 from django.http import HttpResponseForbidden, HttpResponseNotFound
+from .utils import paginate_queryset
+from .filters import get_published_posts, filter_posts_for_profile, can_view_post
 
 
 class PostCreateView(LoginRequiredMixin, CreateView):
     model = Post
     form_class = PostForm
     template_name = 'blog/create.html'
-    success_url = reverse_lazy('blog:index')
-
+    success_url = reverse_lazy('blog:index')  
     def form_valid(self, form):
         post = form.save(commit=False)
         post.author = self.request.user
@@ -91,7 +92,7 @@ class PostUpdateView(LoginRequiredMixin, UpdateView):
 
 class PostDeleteView(LoginRequiredMixin, DeleteView):
     model = Post
-    template_name = 'blog/delete.html'
+    template_name = 'blog/create.html'
 
     def get_object(self, queryset=None):
         post_id = self.kwargs.get('post_id')
@@ -100,11 +101,16 @@ class PostDeleteView(LoginRequiredMixin, DeleteView):
     def dispatch(self, request, *args, **kwargs):
         self.object = self.get_object()
 
-        # Если не автор - редирект на пост
+        # Проверка: автор ли пользователь
         if self.object.author != request.user:
             return redirect('blog:post_detail', post_id=self.object.id)
 
         return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['form'] = PostForm(instance=self.object)
+        return context
 
     def get_success_url(self):
         return reverse_lazy('blog:index')
@@ -115,7 +121,7 @@ class CommentPermissionMixin(LoginRequiredMixin, UserPassesTestMixin):
 
     def get_object(self, queryset=None):
         post_id = self.kwargs.get('post_id')
-        pk = self.kwargs.get('pk')
+        pk = self.kwargs.get('comment_id')
         return get_object_or_404(Comment, pk=pk, post_id=post_id)
 
     def dispatch(self, request, *args, **kwargs):
@@ -155,109 +161,58 @@ class CommentDeleteView(CommentPermissionMixin, DeleteView):
         self.object = self.get_object()
         context = self.get_context_data(object=self.object)
         return self.render_to_response(context)
+    
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # Удаляем форму, если она случайно появилась
+        context.pop('form', None)
+        return context
 
  
 def index(request):
-    post_list = Post.objects.select_related(
-        'author',
-        'location',
-        'category'
-    ).filter(
-        is_published=True, pub_date__lte=timezone.now(),
-        category__is_published=True
-    ).order_by(
-        '-pub_date'
-    ).annotate(comment_count=Count('comments'))  # ← АННОТАЦИЯ В КЛАССЕ!
-
-    paginator = Paginator(post_list, 10)
-
-    # Получаем номер страницы из GET-параметра
-    page_number = request.GET.get('page')
-
-    try:
-        # Получаем объект страницы
-        page_obj = paginator.get_page(page_number)
-    except PageNotAnInteger:
-        # Если page не число, показываем первую страницу
-        page_obj = paginator.get_page(1)
-    except EmptyPage:
-        # Если страница пуста, показываем последнюю
-        page_obj = paginator.get_page(paginator.num_pages)
+    post_list = get_published_posts(Post)
+    
+    page_obj = paginate_queryset(post_list, request, per_page=10)
 
     context = {
         'page_obj': page_obj,
-        'paginator': paginator,
     }
     return render(request, 'blog/index.html', context)
 
 
 def post_detail(request, post_id):
-    """
-    Страница поста. Автор видит все свои посты, остальные - только опубликованные.
-    """
-    # 1. Находим пост (без фильтров!)
+    # 1. Находим пост
     post = get_object_or_404(
         Post.objects.select_related('author', 'location', 'category'),
         id=post_id
     )
 
-    # 2. Проверяем, является ли пользователь автором
-    is_author = request.user.is_authenticated and request.user == post.author
+    # 2. Используем утилиту для проверки доступа
+    if not can_view_post(post, request.user):
+        raise Http404("Пост не найден")
 
-    # 3. Определяем, может ли пользователь видеть пост
-    if not is_author:
-        # Не-авторы видят только:
-        # - опубликованные посты
-        # - с опубликованной категорией
-        # - с датой публикации <= сейчас
-        if (not post.is_published or 
-            not post.category.is_published or
-            post.pub_date > timezone.now()):
-            raise Http404("Пост не найден")
-
-    # 4. Форма и комментарии (только для опубликованных постов)
+    # 3. Форма и комментарии
     form = CommentForm()
-
-    # Комментарии показываем всем, если пост доступен
     comments = post.comments.all().order_by('created_at')
 
     context = {
         'post': post,
         'form': form,
         'comments': comments,
-        'now': timezone.now(),  # для проверки отложенных постов
+        'now': timezone.now(),
     }
 
     return render(request, 'blog/detail.html', context)
 
 
 def category_posts(request, category_slug):
-    category = get_object_or_404(Category, slug=category_slug,
-                                 is_published=True)
+    category = get_object_or_404(Category, slug=category_slug, is_published=True)
 
-    post_list = Post.objects.select_related(
-        'author',
-        'location',
-        'category'
-    ).filter(
-        category=category,
-        is_published=True,
-        pub_date__lte=timezone.now(),
-        category__is_published=True
-    ).order_by(
-        '-pub_date'
-    ).annotate(comment_count=Count('comments'))
-
-    paginator = Paginator(post_list, 10)
-    page_number = request.GET.get('page')
-
-    try:
-        page_obj = paginator.get_page(page_number)
-    except (PageNotAnInteger, EmptyPage):
-        page_obj = paginator.get_page(1)
-
-    # Получаем объект категории для заголовка
-    category = Category.objects.get(slug=category_slug)
+    # Используем утилиту для получения опубликованных постов и фильтруем по категории
+    post_list = get_published_posts(Post).filter(category=category)
+    
+    # Используем утилиту пагинации
+    page_obj = paginate_queryset(post_list, request, per_page=10)
 
     context = {
         'page_obj': page_obj,
@@ -267,36 +222,43 @@ def category_posts(request, category_slug):
 
 
 class UserProfileView(ListView):
-    """Класс для страницы профиля пользователя."""
     template_name = 'blog/profile.html'
-    context_object_name = 'page_obj'  
+    context_object_name = 'page_obj'
     paginate_by = 10
 
     def get_queryset(self):
-        """
-        Возвращает публикации пользователя.
-        """
         username = self.kwargs.get('username')
-        # Сохраняем пользователя в атрибут для использования в get_context_data
         self.profile_user = get_object_or_404(User, username=username)
 
-        return Post.objects.filter(
+        # Получаем все посты пользователя
+        user_posts = Post.objects.filter(
             author=self.profile_user
         ).order_by(
             '-created_at'
         ).annotate(comment_count=Count('comments'))
 
+        # Проверяем, является ли текущий пользователь владельцем
+        is_owner = self.request.user.is_authenticated and self.request.user == self.profile_user
+
+        # Фильтруем посты с помощью утилиты
+        return filter_posts_for_profile(user_posts, is_owner)
+
     def get_context_data(self, **kwargs):
-        """
-        Добавляем пользователя в контекст как 'profile'.
-        """
         context = super().get_context_data(**kwargs)
         context['profile'] = self.profile_user
+        # Добавляем флаг для шаблона
+        context['is_owner'] = self.request.user.is_authenticated and self.request.user == self.profile_user
         return context
 
 
 class EditProfileView(LoginRequiredMixin, UpdateView):
-    """ Класс для редактирования профиля пользователя. """
+    """
+    Класс для редактирования профиля пользователя.
+    Соответствует вашему шаблону:
+    - Использует шаблон 'blog/user.html'
+    - Отображает форму для полей: first_name, last_name, username, email
+    - После успешного сохранения перенаправляет на профиль
+    """
     model = User
     template_name = 'blog/user.html'
     fields = ['first_name', 'last_name', 'username', 'email']
